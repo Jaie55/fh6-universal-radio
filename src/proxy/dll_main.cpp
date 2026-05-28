@@ -1,9 +1,37 @@
 // version.dll proxy: forwards every export to the real system DLL via PE
-// forwarders (declared in version.def), and spawns the bridge on
-// DLL_PROCESS_ATTACH so the loader is never blocked on FMOD discovery
-// or HTTP startup.
+// forwarders, and spawns the bridge on DLL_PROCESS_ATTACH so the loader is
+// never blocked on FMOD discovery or HTTP startup.
+//
+// MSVC's .def parser rejects absolute paths in forwarder targets (the `:` /
+// `\` break parsing), so the pragmas below carry the forwarders for MSVC and
+// version.def carries them for MinGW (added conditionally in CMakeLists.txt).
 
 #include <windows.h>
+
+#ifdef _MSC_VER
+#define FWD(name) \
+    __pragma(comment(linker, "/EXPORT:" #name "=C:\\Windows\\System32\\version." #name))
+
+FWD(GetFileVersionInfoA)
+FWD(GetFileVersionInfoByHandle)
+FWD(GetFileVersionInfoExA)
+FWD(GetFileVersionInfoExW)
+FWD(GetFileVersionInfoSizeA)
+FWD(GetFileVersionInfoSizeExA)
+FWD(GetFileVersionInfoSizeExW)
+FWD(GetFileVersionInfoSizeW)
+FWD(GetFileVersionInfoW)
+FWD(VerFindFileA)
+FWD(VerFindFileW)
+FWD(VerInstallFileA)
+FWD(VerInstallFileW)
+FWD(VerLanguageNameA)
+FWD(VerLanguageNameW)
+FWD(VerQueryValueA)
+FWD(VerQueryValueW)
+
+#undef FWD
+#endif
 
 namespace fh6 {
 void run_bridge(HMODULE self) noexcept;

@@ -44,7 +44,6 @@ endif()
 
 add_library(version SHARED
     src/proxy/dll_main.cpp
-    src/proxy/version.def
     src/bridge.cpp
     src/log.cpp
     src/config.cpp
@@ -65,6 +64,12 @@ add_library(version SHARED
     src/sources/youtube_music_source.cpp
     src/sources/jellyfin_source.cpp
 )
+
+# MSVC carries the forwarders via pragmas in dll_main.cpp because its .def
+# parser rejects absolute paths in forwarder targets; MinGW takes the .def.
+if(NOT MSVC)
+    target_sources(version PRIVATE src/proxy/version.def)
+endif()
 
 target_include_directories(version PRIVATE
     include
