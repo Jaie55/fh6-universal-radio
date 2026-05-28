@@ -168,8 +168,8 @@ void run_bridge(HMODULE self) noexcept {
             yt->set_ffmpeg_path(c.general.ffmpeg_path);
         }
         if (auto* jf = dynamic_cast<sources::JellyfinSource*>(mgr.find("jellyfin"))) {
-            jf->set_config(c.jellyfin);
             jf->set_ffmpeg_path(c.general.ffmpeg_path);
+            jf->set_config(c.jellyfin);
         }
 
         for (auto* s : mgr.sources_snapshot()) s->set_playback_options(c.playback);
