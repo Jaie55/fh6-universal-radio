@@ -519,23 +519,16 @@ struct HttpServer::Impl {
             store.patch([shuffle](Config& c) { c.youtube_music.shuffle = shuffle; });
             return ok();
         }
-        if (req.method == "POST" && req.path == "/api/source/jellyfin/cast") {
-            auto* jf = dynamic_cast<JellyfinSource*>(mgr.find("jellyfin"));
-            if (!jf) return fail(400, "Jellyfin source not enabled");
-            
-            auto j = json::parse(req.body);
-            // check if Jellyfin is currently the active radio station
+        if (m == "POST" && p == "/api/source/jellyfin/cast") {
+            auto* jf = find_typed<sources::JellyfinSource>("jellyfin");
+            if (!jf) return fail(404, "jellyfin not registered");
+            auto playlist_id = json::parse(req.body).value("playlist_id", std::string{});
+            if (playlist_id.empty()) return fail(400, "playlist_id required");
             const bool was_active = (mgr.active() == jf);
-            jf->cast(j.value("playlist_id", ""));
-
-            // if it was already active, flush the old song out of the buffer instantly
-            if (was_active) {
-                mgr.ring().drain();
-            }
-
+            if (!jf->cast(std::move(playlist_id))) return fail(502, "jellyfin fetch failed");
+            if (was_active) mgr.ring().drain();
             mgr.switch_to("jellyfin");
-            
-            return ok(json{{"success", true}});
+            return ok();
         }
         if (m == "POST" && p == "/api/source/local_files/rescan") {
             auto* lf = find_typed<sources::LocalFileSource>("local_files");

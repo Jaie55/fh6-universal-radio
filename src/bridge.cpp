@@ -120,7 +120,7 @@ void run_bridge(HMODULE self) noexcept {
             mgr.unregister_source("youtube_music");
         }
         if (c.jellyfin.enabled && !mgr.find("jellyfin")) {
-            auto src = std::make_unique<JellyfinSource>(c.jellyfin);
+            auto src = std::make_unique<sources::JellyfinSource>(c.jellyfin);
             if (src->initialize()) mgr.register_source(std::move(src));
         } else if (!c.jellyfin.enabled && mgr.find("jellyfin")) {
             mgr.unregister_source("jellyfin");
@@ -165,7 +165,7 @@ void run_bridge(HMODULE self) noexcept {
         if (auto* yt = dynamic_cast<sources::YouTubeMusicSource*>(mgr.find("youtube_music"))) {
             yt->set_shuffle(c.youtube_music.shuffle);
         }
-        if (auto* jf = dynamic_cast<JellyfinSource*>(mgr.find("jellyfin"))) {
+        if (auto* jf = dynamic_cast<sources::JellyfinSource*>(mgr.find("jellyfin"))) {
             jf->set_config(c.jellyfin);
         }
 
