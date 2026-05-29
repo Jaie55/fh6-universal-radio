@@ -377,7 +377,8 @@ void LocalFileSource::next() {
 
 void LocalFileSource::previous() {
     std::scoped_lock lk{mu_};
-    discard_prefetch_locked();   // prefetch targets cursor+1; previous() rewinds
+    if (playlist_.empty()) return;   // size()-1 would underflow size_t
+    discard_prefetch_locked();       // prefetch targets cursor+1; previous() rewinds
     open_track(cursor_ == 0 ? playlist_.size() - 1 : cursor_ - 1);
     state_.store(PlaybackState::playing, std::memory_order_release);
 }
