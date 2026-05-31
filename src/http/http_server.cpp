@@ -402,11 +402,7 @@ struct HttpServer::Impl {
         };
     }
 
-    IAudioSource* find(std::string_view name) const {
-        for (auto* s : mgr.sources_snapshot())
-            if (s->name() == name) return s;
-        return nullptr;
-    }
+    IAudioSource* find(std::string_view name) const { return mgr.find(name); }
     template <class T> T* find_typed(std::string_view name) const {
         return dynamic_cast<T*>(find(name));
     }
