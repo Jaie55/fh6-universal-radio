@@ -47,6 +47,8 @@ bool extension_matches(const std::filesystem::path& p, const std::vector<std::st
     return std::ranges::find(exts, e) != exts.end();
 }
 
+/// Parse an .m3u / .m3u8 playlist: one entry per line, # comments,
+/// extended info (#EXTINF) is ignored.
 std::vector<std::filesystem::path> parse_m3u_playlist(const std::filesystem::path& file) {
     std::vector<std::filesystem::path> out;
     std::ifstream in(file);
