@@ -130,6 +130,7 @@ void run_bridge(HMODULE self) noexcept {
 
         if (c.external_audio.enabled && !mgr.find("external_audio")) {
             auto src = std::make_unique<sources::ExternalAudioSource>();
+            src->set_config(c.external_audio);
             if (src->initialize()) mgr.register_source(std::move(src));
         } else if (!c.external_audio.enabled && mgr.find("external_audio")) {
             mgr.unregister_source("external_audio");
