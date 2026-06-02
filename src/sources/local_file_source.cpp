@@ -361,41 +361,59 @@ void LocalFileSource::apply_order_locked(const LocalStation& st) {
 
 void LocalFileSource::rebuild_playlist() {
     stop_tag_thread();   // join any in-flight tag re-sort before mutating state
-    std::scoped_lock lk{mu_};
-    discard_prefetch_locked();   // playlist contents/order are about to change
-    const std::uint64_t gen = ++rebuild_gen_;
-    playlist_.clear();
-    cursor_ = 0;
 
-    const LocalStation* st = active_station_locked();
-    if (!st || st->roots.empty()) return;
+    // Snapshot what we need, then scan off-lock: the directory walk and .m3u
+    // parsing are heavy IO and pump() also takes mu_, so scanning under the lock
+    // would stall the audio thread on large libraries. Mirrors index_worker's
+    // snapshot -> work -> reacquire -> gen-check handover.
+    LocalStation              st;
+    std::vector<std::string>  formats;
+    std::filesystem::path     cur;
+    std::uint64_t             gen;
+    {
+        std::scoped_lock lk{mu_};
+        discard_prefetch_locked();   // playlist contents/order are about to change
+        gen = ++rebuild_gen_;
+        const LocalStation* a = active_station_locked();
+        if (!a || a->roots.empty()) {
+            playlist_.clear();
+            cursor_ = 0;
+            dec_.reset();            // no station -> nothing to play
+            return;
+        }
+        st      = *a;
+        formats = cfg_.supported_formats;
+        cur     = (dec_ && cursor_ < playlist_.size()) ? playlist_[cursor_]
+                                                       : std::filesystem::path{};
+    }
+
+    std::vector<std::filesystem::path> built;
+    std::set<std::filesystem::path>    seen;
 
     std::vector<std::string> excluded;
-    excluded.reserve(st->excluded.size());
-    for (const auto& e : st->excluded) excluded.push_back(norm_path_key(e));
+    excluded.reserve(st.excluded.size());
+    for (const auto& e : st.excluded) excluded.push_back(norm_path_key(e));
     auto is_excluded = [&](const std::filesystem::path& dir) {
         const auto key = norm_path_key(dir);
         for (const auto& ex : excluded)
             if (path_within(key, ex)) return true;
         return false;
     };
-
-    std::set<std::filesystem::path> seen;
     auto add_file = [&](const std::filesystem::path& p) {
         const auto ext = p.extension().string();
         if (ieq_str(ext, ".m3u") || ieq_str(ext, ".m3u8")) {
             for (auto& entry : parse_m3u_playlist(p))
-                if (extension_matches(entry, cfg_.supported_formats) && seen.insert(entry).second)
-                    playlist_.push_back(std::move(entry));
-        } else if (extension_matches(p, cfg_.supported_formats) && seen.insert(p).second) {
-            playlist_.push_back(p);
+                if (extension_matches(entry, formats) && seen.insert(entry).second)
+                    built.push_back(std::move(entry));
+        } else if (extension_matches(p, formats) && seen.insert(p).second) {
+            built.push_back(p);
         }
     };
 
-    for (const auto& root : st->roots) {
+    for (const auto& root : st.roots) {
         std::error_code ec;
         if (root.empty() || !std::filesystem::exists(root, ec)) continue;
-        if (st->recursive) {
+        if (st.recursive) {
             std::filesystem::recursive_directory_iterator it(
                 root, std::filesystem::directory_options::skip_permission_denied, ec), end;
             for (; it != end && !ec; it.increment(ec)) {
@@ -412,11 +430,24 @@ void LocalFileSource::rebuild_playlist() {
         }
     }
 
-    apply_order_locked(*st);
+    std::scoped_lock lk{mu_};
+    if (rebuild_gen_.load(std::memory_order_acquire) != gen) return;  // superseded mid-scan
+    discard_prefetch_locked();       // pump() may have prefetched against the old queue
+    playlist_ = std::move(built);
+    apply_order_locked(st);
+    // Keep the current track playing if the rebuilt queue still has it (an order
+    // change within the same station); otherwise it's a different station, so
+    // drop the decoder and let play() cut over to the new queue.
+    cursor_ = 0;
+    if (!cur.empty()) {
+        auto it = std::ranges::find(playlist_, cur);
+        if (it != playlist_.end()) cursor_ = (std::size_t)(it - playlist_.begin());
+        else dec_.reset();
+    }
     // Populate the metadata index in the background for every station so the
     // queue shows real titles and search matches them; reorder by tags only
     // when the station asks for album/tag grouping.
-    start_index_locked(gen, st->order == "album" && st->grouping == "tags");
+    start_index_locked(gen, st.order == "album" && st.grouping == "tags");
 }
 
 // ---- tag-grouping background index -----------------------------------------
@@ -484,6 +515,18 @@ void LocalFileSource::save_index() {
         os << j.dump();
     }
     std::filesystem::rename(tmp, index_path_, ec);
+    if (ec) {
+        // Windows rename() won't clobber an existing target; fall back to
+        // replace, and on any failure drop the temp so it doesn't accumulate.
+        std::error_code rep;
+        std::filesystem::remove(index_path_, rep);
+        std::filesystem::rename(tmp, index_path_, rep);
+        if (rep) {
+            log::warn("[local] could not write metadata index {}: {}",
+                      index_path_.string(), rep.message());
+            std::filesystem::remove(tmp, rep);
+        }
+    }
 }
 
 std::vector<std::filesystem::path>
