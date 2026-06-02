@@ -166,7 +166,12 @@ void run_bridge(HMODULE self) noexcept {
     sync_sources(with_resolved_bins(cfg, deps));
 
     if (!mgr.switch_to(cfg.general.default_source) && !mgr.switch_to(cfg.general.fallback_source)) {
-        log::warn("[bridge] neither default nor fallback source was registered");
+        auto snap = mgr.sources_snapshot();
+        if (snap.size() == 1) {
+            mgr.switch_to(snap[0]->name());
+        } else {
+            log::warn("[bridge] neither default nor fallback source was registered");
+        }
     }
 
     fmod_bridge::DSPBridge bridge{mgr, fns};
@@ -185,7 +190,10 @@ void run_bridge(HMODULE self) noexcept {
         const Config c = with_resolved_bins(raw, deps);
         sync_sources(c);
         if (!mgr.active()) {
-            if (!mgr.switch_to(c.general.default_source)) mgr.switch_to(c.general.fallback_source);
+            if (!mgr.switch_to(c.general.default_source) && !mgr.switch_to(c.general.fallback_source)) {
+                auto snap = mgr.sources_snapshot();
+                if (snap.size() == 1) mgr.switch_to(snap[0]->name());
+            }
         }
 
         // Push the gain to both: the control loop's ramper otherwise snaps
