@@ -197,15 +197,14 @@ std::unique_ptr<JellyfinSource::Pipe> JellyfinSource::spawn_pipe_locked(std::siz
     cmd += L"-acodec pcm_s16le -ar 48000 -ac 2 pipe:1";
 
     if (worker_ && worker_->alive()) {
-        auto result = worker_->spawn_single(cmd);
-        if (!result.ok) {
-            log::warn("[jellyfin] worker spawn_single failed for {}", queue_[for_idx].id);
-            return nullptr;
+        if (auto result = worker_->spawn_single(cmd); result.ok) {
+            pipe->worker      = worker_;
+            pipe->pipeline_id = result.pipeline_id;
+            pipe->read_pipe   = result.pcm_pipe;
+            return pipe;
         }
-        pipe->worker      = worker_;
-        pipe->pipeline_id = result.pipeline_id;
-        pipe->read_pipe   = result.pcm_pipe;
-        return pipe;
+        log::warn("[jellyfin] worker spawn failed for {} -- falling back to direct spawn",
+                  queue_[for_idx].id);
     }
 
     pipe->job = create_kill_on_close_job();

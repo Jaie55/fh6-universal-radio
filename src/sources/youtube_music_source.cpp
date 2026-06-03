@@ -17,6 +17,7 @@ namespace {
 
 using subprocess::create_kill_on_close_job;
 using subprocess::describe_launch_failure;
+using subprocess::drain_to_eof;
 using subprocess::open_nul;
 using subprocess::open_stderr_log;
 using subprocess::quote;
@@ -26,16 +27,6 @@ using subprocess::widen;
 
 // PCM contract written by ffmpeg: 48000 Hz * 2 ch * 2 bytes.
 constexpr std::uint64_t kPcmBytesPerSec = 48000ull * 2ull * 2ull;
-
-// Block until the child closes its stdout. Used by the playlist enumerator,
-// which is small (one id per line) and runs once per cast.
-std::string drain_to_eof(HANDLE pipe) {
-    std::string out;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(pipe, buf, sizeof(buf), &got, nullptr) && got > 0) out.append(buf, got);
-    return out;
-}
 
 bool is_playlist_url(std::string_view url) {
     return url.find("playlist?") != std::string_view::npos ||
@@ -178,12 +169,12 @@ void YouTubeMusicSource::resolve_queue_locked() {
         cmd += L"--cookies " + quote(cfg_.cookies_path.wstring()) + L" ";
     cmd += L"-- " + quote(widen(target_url_));
 
+    // Prefer the worker (no fork of the game process); fall back to a direct
+    // spawn when it's absent or returns nothing.
     std::string raw;
-    if (worker_ && worker_->alive()) {
-        // Delegate to worker process -- avoids fork() of the game process.
-        raw = worker_->run_capture(cmd);
-    } else {
-        // Fallback: direct spawn (original path).
+    if (worker_ && worker_->alive()) raw = worker_->run_capture(cmd);
+
+    if (raw.empty()) {
         HANDLE job = create_kill_on_close_job();
         if (!job) {
             log::warn("[yt] resolve_queue: CreateJobObject failed ({})", GetLastError());
@@ -267,24 +258,22 @@ YouTubeMusicSource::spawn_pipe_locked(std::string_view url, std::size_t for_idx)
         tl_cmd += L"--cookies " + quote(cfg_.cookies_path.wstring()) + L" ";
     tl_cmd += L"-- " + quote(widen(play_url));
 
-    // ---- Worker path: delegate all CreateProcess calls to the worker ----
+    // Worker path: delegate every CreateProcess to the worker. Falls through to
+    // the direct path below if the worker is absent or the spawn fails.
     if (worker_ && worker_->alive()) {
-        auto result = worker_->spawn_pipeline({yt_cmd, ff_cmd}, tl_cmd);
-        if (!result.ok) {
-            log::warn("[yt] worker spawn_pipeline failed for {}", play_url);
-            return nullptr;
+        if (auto result = worker_->spawn_pipeline({yt_cmd, ff_cmd}, tl_cmd); result.ok) {
+            pipe->worker      = worker_;
+            pipe->pipeline_id = result.pipeline_id;
+            pipe->read_pipe   = result.pcm_pipe;
+            pipe->title_pipe  = result.meta_pipe;
+            log::info("[yt] pipe started via worker for {} (track {}/{})", play_url, for_idx + 1,
+                      queue_.size());
+            return pipe;
         }
-        pipe->worker      = worker_;
-        pipe->pipeline_id = result.pipeline_id;
-        pipe->read_pipe   = result.pcm_pipe;
-        pipe->title_pipe  = result.meta_pipe;
-
-        log::info("[yt] pipe started via worker for {} (track {}/{})",
-                  play_url, for_idx + 1, queue_.size());
-        return pipe;
+        log::warn("[yt] worker spawn failed for {} -- falling back to direct spawn", play_url);
     }
 
-    // ---- Direct path: original CreateProcess calls (fallback) ----
+    // Direct path: spawn the yt-dlp | ffmpeg chain + title resolver ourselves.
     pipe->job = create_kill_on_close_job();
     if (!pipe->job) {
         log::warn("[yt] CreateJobObject failed ({})", GetLastError());

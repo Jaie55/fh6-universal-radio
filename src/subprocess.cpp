@@ -159,6 +159,50 @@ HANDLE spawn_in_job(HANDLE job, const std::wstring& cmd, HANDLE stdin_h, HANDLE 
     return pi.hProcess;
 }
 
+std::string drain_to_eof(HANDLE pipe, std::size_t max_bytes) {
+    std::string out;
+    char buf[1 << 16];
+    DWORD got = 0;
+    while ((max_bytes == 0 || out.size() < max_bytes) &&
+           ReadFile(pipe, buf, sizeof(buf), &got, nullptr) && got > 0)
+        out.append(buf, got);
+    return out;
+}
+
+std::string capture_output(const std::wstring& cmd, bool capture_stderr, std::size_t max_bytes) {
+    HANDLE job = create_kill_on_close_job();
+    if (!job) return {};
+
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 1 << 16)) {
+        CloseHandle(job);
+        return {};
+    }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    // Capture the requested stream via wr; the other goes to NUL (stdout) or the
+    // shared stderr log (stderr).
+    HANDLE nul_in   = open_nul(GENERIC_READ);
+    HANDLE off_band = capture_stderr ? open_nul(GENERIC_WRITE) : open_stderr_log();
+    HANDLE proc     = spawn_in_job(job, cmd, nul_in, capture_stderr ? off_band : wr,
+                                   capture_stderr ? wr : off_band);
+    CloseHandle(wr);
+    if (nul_in) CloseHandle(nul_in);
+    if (off_band) CloseHandle(off_band);
+    if (!proc) {
+        CloseHandle(rd);
+        CloseHandle(job);
+        return {};
+    }
+
+    std::string out = drain_to_eof(rd, max_bytes);
+    CloseHandle(rd);
+    CloseHandle(proc);
+    CloseHandle(job); // KILL_ON_JOB_CLOSE reaps the child if it hasn't exited
+    return out;
+}
+
 namespace {
 
 // Freeze every thread of `pid`. Called before we enumerate and terminate a
@@ -191,9 +235,9 @@ void kill_process_tree(DWORD pid) {
     if (snap != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W pe{};
         pe.dwSize = sizeof(pe);
-        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe))
-            if (pe.th32ParentProcessID == pid)
-                kill_process_tree(pe.th32ProcessID);
+        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+            if (pe.th32ParentProcessID == pid) kill_process_tree(pe.th32ProcessID);
+        }
         CloseHandle(snap);
     }
 
@@ -205,10 +249,11 @@ void kill_process_tree(DWORD pid) {
 
 void reap(HANDLE& proc) noexcept {
     if (!proc) return;
-    if (DWORD pid = GetProcessId(proc))
+    if (DWORD pid = GetProcessId(proc)) {
         kill_process_tree(pid);
-    else
-        TerminateProcess(proc, 1); // fallback when the PID lookup fails
+    } else {
+        TerminateProcess(proc, 1); // PID lookup failed -- terminate just this one
+    }
     CloseHandle(proc);
     proc = nullptr;
 }

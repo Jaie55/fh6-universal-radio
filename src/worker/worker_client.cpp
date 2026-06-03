@@ -45,10 +45,11 @@ HANDLE connect_to_stream(const std::wstring& pipe_name) {
         HANDLE h = CreateFileW(pipe_name.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0,
                                nullptr);
         if (h != INVALID_HANDLE_VALUE) return h;
-        if (GetLastError() == ERROR_PIPE_BUSY)
+        if (GetLastError() == ERROR_PIPE_BUSY) {
             WaitNamedPipeW(pipe_name.c_str(), 200);
-        else
+        } else {
             Sleep(50);
+        }
     }
     return nullptr;
 }
@@ -116,10 +117,9 @@ void WorkerClient::stop() {
         TerminateProcess(process_, 1);
     CloseHandle(process_);
     process_ = nullptr;
-    // token_ is deliberately left set: it is written only here-adjacent in
-    // start() (before any source exists) and read lock-free by request() from
-    // source threads that may still be tearing down. Clearing it now would race
-    // their reads; a stale token simply fails to connect to the dead worker.
+    // token_ is left set on purpose: request() reads it lock-free from source
+    // threads that may still be tearing down, so clearing it would race them. A
+    // stale token just fails to connect to the now-dead worker, which is fine.
 }
 
 bool WorkerClient::alive() const noexcept {
@@ -133,7 +133,7 @@ bool WorkerClient::alive() const noexcept {
 // Control transport: one connection per request (lock-free, fully concurrent)
 // ---------------------------------------------------------------------------
 
-std::string WorkerClient::request(const std::string& req) const {
+std::string WorkerClient::request(const std::string& req, bool want_response) const {
     if (token_.empty()) return {};
     const std::wstring name = control_pipe_name(token_);
 
@@ -151,7 +151,7 @@ std::string WorkerClient::request(const std::string& req) const {
     }
 
     std::string resp;
-    if (ipc_send(h, req)) resp = ipc_recv(h);
+    if (ipc_send(h, req) && want_response) resp = ipc_recv(h);
     CloseHandle(h);
     return resp;
 }
@@ -187,7 +187,7 @@ WorkerClient::SpawnResult WorkerClient::spawn_pipeline(const std::vector<std::ws
     out.pipeline_id = next_id_.fetch_add(1, std::memory_order_relaxed);
 
     json cmds = json::array();
-    for (auto& c : chain) cmds.push_back(subprocess::narrow(c));
+    for (const auto& c : chain) cmds.push_back(subprocess::narrow(c));
 
     json req = {{"op", "spawn"}, {"id", out.pipeline_id}, {"chain", cmds}};
     if (!side_cmd.empty()) req["side_cmd"] = subprocess::narrow(side_cmd);
@@ -202,11 +202,13 @@ WorkerClient::SpawnResult WorkerClient::spawn_pipeline(const std::vector<std::ws
             return out;
         }
         // Connect to the data streams the worker created.
-        if (resp.contains("pcm_pipe"))
+        if (resp.contains("pcm_pipe")) {
             out.pcm_pipe = connect_to_stream(subprocess::widen(resp["pcm_pipe"].get<std::string>()));
-        if (resp.contains("meta_pipe"))
+        }
+        if (resp.contains("meta_pipe")) {
             out.meta_pipe =
                 connect_to_stream(subprocess::widen(resp["meta_pipe"].get<std::string>()));
+        }
         out.ok = (out.pcm_pipe != nullptr);
     } catch (...) {
         log::warn("[worker] malformed spawn response");
@@ -230,9 +232,11 @@ WorkerClient::SpawnResult WorkerClient::spawn_single(const std::wstring& cmd) {
 }
 
 void WorkerClient::kill_pipeline(uint32_t id) {
-    // request() drains the response so the worker finishes the teardown
-    // (joining proxy threads, flushing buffers) before we return.
-    request(json({{"op", "kill"}, {"id", id}}).dump());
+    // Fire-and-forget: sources call this from ~Pipe under their audio lock, and
+    // the teardown (reaping a yt-dlp tree, joining proxy threads) can take tens
+    // of ms -- waiting for it would reintroduce the stutter the worker removes.
+    // The worker reaps on its own; an unread reply is harmless.
+    request(json({{"op", "kill"}, {"id", id}}).dump(), /*want_response=*/false);
 }
 
 } // namespace fh6::worker

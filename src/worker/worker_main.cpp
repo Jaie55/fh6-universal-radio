@@ -40,11 +40,9 @@ namespace {
 std::wstring g_token;                    // session token; set once in main()
 SECURITY_ATTRIBUTES* g_pipe_sa = nullptr; // owner-restricted DACL for our pipes
 
-// Build a SECURITY_ATTRIBUTES granting access only to authenticated users plus
-// SYSTEM/Admins -- never network or anonymous callers. Combined with the random
-// token in the pipe name, this closes the squatting / command-injection vector.
-// Returns nullptr (default security) if the SD can't be built; the unguessable
-// name still protects us in that case. The descriptor lives for the process.
+// DACL limiting our pipes to authenticated users + SYSTEM/Admins (never network
+// or anonymous). With the random token in the name this blocks squatting and
+// injection; on failure the unguessable name alone still protects us.
 SECURITY_ATTRIBUTES* make_pipe_sa() {
     static SECURITY_ATTRIBUTES sa{};
     PSECURITY_DESCRIPTOR sd = nullptr;
@@ -61,10 +59,9 @@ SECURITY_ATTRIBUTES* make_pipe_sa() {
 // Pipeline: a set of child processes + proxy threads for one audio track.
 // ---------------------------------------------------------------------------
 
-// One proxy bridges a child's anonymous-pipe stdout to a named data pipe the
-// DLL reads. The Pipeline is the sole owner of these handles: the proxy only
-// uses them, and never closes them, so kill() can close them race-free after
-// the thread has joined.
+// Bridges a child's stdout (anonymous pipe) to the named pipe the DLL reads.
+// The Pipeline owns these handles; the proxy only uses them, so kill() can
+// close them race-free once it has joined the thread.
 struct ProxyData {
     HANDLE source;       // anonymous pipe read-end (child stdout)
     HANDLE dest;         // named pipe server-end (DLL reads the client end)
@@ -84,22 +81,19 @@ struct Pipeline {
         // 1. Tell the proxies to stop touching their pipes.
         for (auto& pd : proxies_data) pd->stop.store(true, std::memory_order_release);
 
-        // 2. Terminate the child trees -- this is what makes a proxy parked in
-        //    ReadFile(source) hit EOF. yt-dlp is a PyInstaller exe whose child
-        //    payload survives a bare TerminateProcess, so reap() walks the whole
-        //    tree (essential under Wine, where Job Objects don't reap reliably).
+        // 2. Reap the child trees -- this is what unblocks a proxy parked in
+        //    ReadFile(source). yt-dlp (PyInstaller) survives a bare
+        //    TerminateProcess, so reap() walks the whole tree (Job Objects don't
+        //    reap reliably under Wine).
         for (HANDLE& h : processes) reap(h);
         processes.clear();
         if (job) { CloseHandle(job); job = nullptr; }
 
-        // 3. Unblock any proxy still parked on its pipe. With stop already set,
-        //    none will touch dest again, and we only break the connection here
-        //    (never close -- that's step 5, after the join), so there is no
-        //    use-after-close race. Two parked states are possible:
-        //      - WriteFile(dest), if the DLL stopped draining without closing
-        //        (e.g. worker-initiated shutdown): DisconnectNamedPipe breaks it.
-        //      - ConnectNamedPipe(dest), if the DLL never connected (e.g.
-        //        spawn-then-immediate-kill): a throwaway client completes it.
+        // 3. Unblock any proxy still parked on dest. stop is set, so none will
+        //    touch dest again; we only break the connection here (close is step
+        //    5, post-join), so there's no use-after-close. Parked on WriteFile ->
+        //    DisconnectNamedPipe breaks it; parked on ConnectNamedPipe (DLL never
+        //    connected) -> a throwaway client completes it.
         for (auto& pd : proxies_data) {
             DisconnectNamedPipe(pd->dest);
             if (HANDLE c = CreateFileW(pd->name.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0,
@@ -156,11 +150,10 @@ void proxy_thread_fn(ProxyData* d) {
         if (!WriteFile(d->dest, buf, got, &written, nullptr)) break;
     }
 
-    // On a graceful child EOF: flush so Wine doesn't discard bytes the DLL
-    // hasn't drained, then disconnect so the DLL's reader sees end-of-track.
-    // We never CloseHandle(dest) -- kill() owns that, and runs only after this
-    // thread is joined, so the two never touch the handle concurrently. On kill
-    // (stop set) the client is already gone, so we leave dest entirely to kill().
+    // Graceful child EOF: flush (so Wine doesn't drop undrained bytes), then
+    // disconnect so the DLL's reader sees end-of-track. dest is closed by kill()
+    // after the join, never here, so the two never race on it. On kill (stop set)
+    // the client is already gone -- leave dest entirely to kill().
     if (!d->stop.load(std::memory_order_acquire)) {
         FlushFileBuffers(d->dest);
         DisconnectNamedPipe(d->dest);
@@ -178,58 +171,15 @@ HANDLE create_stream_pipe(const std::wstring& name) {
 }
 
 // ---------------------------------------------------------------------------
-// Handle "run" -- synchronous command execution with output capture.
+// Handle "run" -- run a command and return its captured output. An empty
+// output also signals failure to the DLL, which then falls back to a direct
+// spawn, so no separate error channel is needed.
 // ---------------------------------------------------------------------------
 
 json handle_run(const json& req) {
-    auto cmd_u8         = req.at("cmd").get<std::string>();
-    bool capture_stderr = req.value("capture_stderr", false);
-
-    HANDLE job = create_kill_on_close_job();
-    if (!job) return {{"ok", false}, {"error", "CreateJobObject failed"}};
-
-    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-    HANDLE rd = nullptr, wr = nullptr;
-    if (!CreatePipe(&rd, &wr, &sa, 1 << 16)) {
-        CloseHandle(job);
-        return {{"ok", false}, {"error", "CreatePipe failed"}};
-    }
-    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-
-    HANDLE nul_in  = open_nul(GENERIC_READ);
-    HANDLE nul_out = open_nul(GENERIC_WRITE);
-
-    HANDLE h_stdout = capture_stderr ? nul_out : wr;
-    HANDLE h_stderr = capture_stderr ? wr : open_stderr_log();
-
-    std::wstring wcmd = widen(cmd_u8);
-    HANDLE proc       = spawn_in_job(job, wcmd, nul_in, h_stdout, h_stderr);
-    DWORD spawn_ec    = proc ? 0 : GetLastError();
-
-    CloseHandle(wr);
-    if (nul_in) CloseHandle(nul_in);
-    if (nul_out) CloseHandle(nul_out);
-    if (!capture_stderr && h_stderr) CloseHandle(h_stderr);
-
-    if (!proc) {
-        CloseHandle(rd);
-        CloseHandle(job);
-        return {{"ok", false},
-                {"error", describe_launch_failure(wcmd.substr(0, wcmd.find(L' ')), spawn_ec, false)}};
-    }
-
-    // Drain output.
-    std::string output;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0) output.append(buf, got);
-
-    CloseHandle(rd);
-    WaitForSingleObject(proc, 10000);
-    CloseHandle(proc);
-    CloseHandle(job);
-
-    return {{"ok", true}, {"output", std::move(output)}};
+    const std::wstring cmd    = widen(req.at("cmd").get<std::string>());
+    const bool capture_stderr = req.value("capture_stderr", false);
+    return {{"ok", true}, {"output", capture_output(cmd, capture_stderr)}};
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +208,7 @@ json handle_spawn(const json& req) {
         SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
         HANDLE rd = nullptr, wr = nullptr;
         if (!CreatePipe(&rd, &wr, &sa, 1 << 20)) {
+            if (prev_read != nul_in) CloseHandle(prev_read);
             if (nul_in) CloseHandle(nul_in);
             if (err_log) CloseHandle(err_log);
             return {{"ok", false}, {"error", "CreatePipe failed"}};

@@ -60,9 +60,10 @@ public:
     void kill_pipeline(uint32_t id);
 
 private:
-    /// Open a fresh control connection, exchange one request/response, close.
+    /// Open a fresh control connection, send req, optionally read the reply, close.
     /// Each call is independent, so a slow capture never blocks a spawn/kill.
-    std::string request(const std::string& req) const;
+    /// want_response=false returns immediately after sending (fire-and-forget).
+    std::string request(const std::string& req, bool want_response = true) const;
 
     std::wstring token_;            // per-session random pipe token (set by start)
     mutable std::mutex mu_;         // guards the process_ handle's lifecycle only

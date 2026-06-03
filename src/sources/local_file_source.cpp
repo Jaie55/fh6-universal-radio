@@ -37,6 +37,7 @@ constexpr std::uint32_t kSampleRate  = 48000;
 constexpr std::size_t kFrameBytes    = 4; // s16 * 2ch
 constexpr std::uint64_t kBytesPerSec = std::uint64_t{kSampleRate} * kFrameBytes;
 
+using subprocess::capture_output;
 using subprocess::create_kill_on_close_job;
 using subprocess::describe_launch_failure;
 using subprocess::open_nul;
@@ -102,53 +103,15 @@ std::string sniff_image_mime(const std::string& d) noexcept {
 }
 
 // Copy the embedded cover out via one ffmpeg pass; empty when there's none.
-ArtworkImage extract_cover(const std::wstring& ff_bin, const std::filesystem::path& file, worker::WorkerClient* worker) {
+// 8 MiB cap: covers are small and an unbounded read could balloon.
+ArtworkImage extract_cover(const std::wstring& ff_bin, const std::filesystem::path& file,
+                           worker::WorkerClient* worker) {
     const std::wstring cmd =
         quote(ff_bin) + L" -hide_banner -nostdin -loglevel error -i " + quote(file.wstring()) +
         L" -an -c:v copy -frames:v 1 -f image2pipe pipe:1";
 
-    if (worker && worker->alive()) {
-        std::string data = worker->run_capture(cmd, false);
-        ArtworkImage out;
-        out.mime = sniff_image_mime(data);
-        if (!out.mime.empty()) out.bytes = std::move(data);
-        return out;
-    }
-
-    HANDLE job = create_kill_on_close_job();
-    if (!job) return {};
-
-    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-    HANDLE rd = nullptr, wr = nullptr;
-    if (!CreatePipe(&rd, &wr, &sa, 1 << 20)) {
-        CloseHandle(job);
-        return {};
-    }
-    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-
-    HANDLE nul_in  = open_nul(GENERIC_READ);
-    HANDLE err_log = open_stderr_log();
-    HANDLE proc = spawn_in_job(job, cmd, nul_in, wr, err_log);
-
-    CloseHandle(wr);
-    if (nul_in) CloseHandle(nul_in);
-    if (err_log) CloseHandle(err_log);
-    if (!proc) {
-        CloseHandle(rd);
-        CloseHandle(job);
-        return {};
-    }
-
-    std::string data;
-    char buf[1 << 16];
-    DWORD got = 0;
-    // Cap at 8 MiB; covers are small and an unbounded read could balloon.
-    while (data.size() < (8u << 20) && ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0)
-        data.append(buf, got);
-    CloseHandle(rd);
-    CloseHandle(proc);
-    CloseHandle(job);
-
+    std::string data = (worker && worker->alive()) ? worker->run_capture(cmd)
+                                                    : capture_output(cmd, false, 8u << 20);
     ArtworkImage out;
     out.mime = sniff_image_mime(data);
     if (!out.mime.empty()) out.bytes = std::move(data);
@@ -164,46 +127,14 @@ bool ieq_str(std::string_view a, std::string_view b) noexcept {
 
 // `ffmpeg -i <file>` with no output specified exits non-zero but first dumps
 // the input header (Duration + container Metadata block) to stderr.
-ProbedMetadata probe_metadata(const std::wstring& ff_bin, const std::filesystem::path& file, worker::WorkerClient* worker) {
+ProbedMetadata probe_metadata(const std::wstring& ff_bin, const std::filesystem::path& file,
+                              worker::WorkerClient* worker) {
     ProbedMetadata out;
     const std::wstring cmd =
         quote(ff_bin) + L" -hide_banner -nostdin -i " + quote(file.wstring());
 
-    std::string err;
-    if (worker && worker->alive()) {
-        err = worker->run_capture(cmd, true);
-    } else {
-        HANDLE job = create_kill_on_close_job();
-        if (!job) return out;
-
-        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-        HANDLE rd = nullptr, wr = nullptr;
-        if (!CreatePipe(&rd, &wr, &sa, 1 << 16)) {
-            CloseHandle(job);
-            return out;
-        }
-        SetHandleInformation(rd, 0, HANDLE_FLAG_INHERIT);
-
-        HANDLE nul_in  = open_nul(GENERIC_READ);
-        HANDLE nul_out = open_nul(GENERIC_WRITE);
-        HANDLE proc = spawn_in_job(job, cmd, nul_in, nul_out, wr);
-
-        CloseHandle(wr);
-        if (nul_in)  CloseHandle(nul_in);
-        if (nul_out) CloseHandle(nul_out);
-        if (!proc) {
-            CloseHandle(rd);
-            CloseHandle(job);
-            return out;
-        }
-
-        char buf[1024];
-        DWORD got = 0;
-        while (ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0) err.append(buf, got);
-        CloseHandle(rd);
-        CloseHandle(proc);
-        CloseHandle(job);
-    }
+    const std::string err = (worker && worker->alive()) ? worker->run_capture(cmd, true)
+                                                         : capture_output(cmd, true);
 
     if (auto pos = err.find("Duration:"); pos != std::string::npos) {
         pos += 9;
@@ -721,15 +652,14 @@ bool LocalFileSource::open_track_ffmpeg(Decoder& d, const std::filesystem::path&
         L" -f s16le -acodec pcm_s16le -ar 48000 -ac 2 pipe:1";
 
     if (worker_ && worker_->alive()) {
-        auto result = worker_->spawn_single(cmd);
-        if (!result.ok) {
-            log::warn("[local] worker spawn_single failed for {}", path.string());
-            return false;
+        if (auto result = worker_->spawn_single(cmd); result.ok) {
+            d.worker      = worker_;
+            d.pipeline_id = result.pipeline_id;
+            d.ff_pipe     = result.pcm_pipe;
+            return true;
         }
-        d.worker      = worker_;
-        d.pipeline_id = result.pipeline_id;
-        d.ff_pipe     = result.pcm_pipe;
-        return true;
+        log::warn("[local] worker spawn failed for {} -- falling back to direct spawn",
+                  path.string());
     }
 
     d.ff_job = create_kill_on_close_job();
