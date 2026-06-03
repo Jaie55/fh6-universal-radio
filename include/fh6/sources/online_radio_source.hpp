@@ -3,6 +3,7 @@
 #include "fh6/audio_source.hpp"
 #include "fh6/config.hpp"
 #include "fh6/playback_dsp.hpp"
+#include "fh6/worker/worker_client.hpp"
 
 #include <atomic>
 #include <filesystem>
@@ -15,7 +16,7 @@ namespace fh6::sources {
 
 class OnlineRadioSource final : public IAudioSource {
 public:
-    OnlineRadioSource(OnlineRadioConfig cfg, std::filesystem::path ffmpeg_path);
+    OnlineRadioSource(OnlineRadioConfig cfg, std::filesystem::path ffmpeg_path, worker::WorkerClient* worker = nullptr);
     ~OnlineRadioSource() override;
 
     std::string_view name() const noexcept override { return "online_radio"; }
@@ -68,6 +69,8 @@ private:
     EqualizerStage eq_;
     std::atomic<bool> volume_norm_{true};
     std::atomic<uint64_t> position_ms_{0};
+
+    worker::WorkerClient* worker_ = nullptr;
 };
 
 } // namespace fh6::sources

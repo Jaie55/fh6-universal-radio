@@ -15,11 +15,15 @@ using subprocess::open_stderr_log;
 using subprocess::quote;
 using subprocess::spawn_in_job;
 using subprocess::widen;
+using subprocess::reap;
 
 constexpr std::uint64_t kPcmBytesPerSec = 48000ull * 2ull * 2ull;
 } // namespace
 
 struct OnlineRadioSource::Pipe {
+    worker::WorkerClient* worker = nullptr;
+    uint32_t pipeline_id = 0;
+
     HANDLE job = nullptr;
     HANDLE proc_ff = nullptr;
     HANDLE read_pipe = nullptr;
@@ -31,13 +35,14 @@ struct OnlineRadioSource::Pipe {
     ~Pipe() {
         if (read_pipe) CloseHandle(read_pipe);
         if (stderr_pipe) CloseHandle(stderr_pipe);
+        if (worker && pipeline_id) worker->kill_pipeline(pipeline_id);
+        subprocess::reap(proc_ff); // direct-mode child (no-op in worker mode)
         if (job)       CloseHandle(job);
-        if (proc_ff)   CloseHandle(proc_ff);
     }
 };
 
-OnlineRadioSource::OnlineRadioSource(OnlineRadioConfig cfg, std::filesystem::path ffmpeg_path)
-    : cfg_{std::move(cfg)}, ffmpeg_path_{std::move(ffmpeg_path)} {
+OnlineRadioSource::OnlineRadioSource(OnlineRadioConfig cfg, std::filesystem::path ffmpeg_path, worker::WorkerClient* worker)
+    : cfg_{std::move(cfg)}, ffmpeg_path_{std::move(ffmpeg_path)}, worker_{worker} {
     if (!cfg_.stations.empty()) {
         current_station_idx_ = std::min(cfg_.default_station_index, cfg_.stations.size() - 1);
     }
@@ -85,23 +90,6 @@ void OnlineRadioSource::start_pipe_locked() {
     }
 
     auto pipe = std::make_unique<Pipe>();
-    pipe->job = create_kill_on_close_job();
-    if (!pipe->job) {
-        log::warn("[online_radio] CreateJobObject failed");
-        return;
-    }
-
-    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-    HANDLE ff_out_r = nullptr, ff_out_w = nullptr;
-    HANDLE err_r = nullptr, err_w = nullptr;
-    
-    if (!CreatePipe(&ff_out_r, &ff_out_w, &sa, 1 << 20)) return;
-    SetHandleInformation(ff_out_r, 0, HANDLE_FLAG_INHERIT);
-    
-    if (!CreatePipe(&err_r, &err_w, &sa, 1 << 16)) { CloseHandle(ff_out_r); CloseHandle(ff_out_w); return; }
-    SetHandleInformation(err_r, 0, HANDLE_FLAG_INHERIT);
-
-    HANDLE nul_in = open_nul(GENERIC_READ);
 
     const auto ff = ffmpeg_path_.empty() ? L"ffmpeg" : ffmpeg_path_.wstring();
 
@@ -115,6 +103,48 @@ void OnlineRadioSource::start_pipe_locked() {
         ff_cmd += L"-af loudnorm=I=-14:TP=-2:LRA=11 ";
     }
     ff_cmd += L"pipe:1";
+
+    if (worker_ && worker_->alive()) {
+        if (auto result = worker_->spawn_pipeline({ff_cmd}, L"", true); result.ok) {
+            pipe->worker = worker_;
+            pipe->pipeline_id = result.pipeline_id;
+            pipe->read_pipe = result.pcm_pipe;
+            pipe->stderr_pipe = result.meta_pipe;
+            
+            pipe_ = std::move(pipe);
+            
+            // set fallback initial metadata
+            if (!target_url_.empty()) {
+                current_artist_ = "Direct Stream";
+                current_title_ = target_url_;
+            } else {
+                current_artist_ = "Online Radio";
+                current_title_ = cfg_.stations[current_station_idx_].name;
+            }
+            
+            position_ms_.store(0, std::memory_order_release);
+            state_.store(PlaybackState::buffering, std::memory_order_release);
+            log::info("[online_radio] Started stream via worker: {}", play_url);
+            return; // exit successfully if the worker handled it
+        }
+        log::warn("[online_radio] worker spawn failed for {} -- falling back to direct spawn", play_url);
+    }
+    // direct spawn fallback: only executes if worker is dead/fails
+    pipe->job = create_kill_on_close_job();
+    if (!pipe->job) {
+        log::warn("[online_radio] CreateJobObject failed");
+        return;
+    }
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE ff_out_r = nullptr, ff_out_w = nullptr;
+    HANDLE err_r = nullptr, err_w = nullptr;
+    
+    if (!CreatePipe(&ff_out_r, &ff_out_w, &sa, 1 << 20)) return;
+    SetHandleInformation(ff_out_r, 0, HANDLE_FLAG_INHERIT);
+    
+    if (!CreatePipe(&err_r, &err_w, &sa, 1 << 16)) { CloseHandle(ff_out_r); CloseHandle(ff_out_w); return; }
+    SetHandleInformation(err_r, 0, HANDLE_FLAG_INHERIT);
+    HANDLE nul_in = open_nul(GENERIC_READ);
 
     // pass err_w instead of the shared err_log
     pipe->proc_ff = spawn_in_job(pipe->job, ff_cmd, nul_in, ff_out_w, err_w);

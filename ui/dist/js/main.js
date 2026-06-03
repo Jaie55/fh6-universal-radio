@@ -147,7 +147,7 @@ function render() {
   refs.ytShuffle.classList.toggle("toggled", shuffleOn);
   refs.ytShuffle.setAttribute("aria-pressed", String(shuffleOn));
 
-  refs.orCard.hidden = !available.some(s => s.name === "online_radio");
+  refs.orCard.hidden = active !== "online_radio";
 
   if (cfg?.online_radio?.stations && refs.orStationView) {
     refs.orStationView.innerHTML = "";

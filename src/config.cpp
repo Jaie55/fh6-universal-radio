@@ -137,7 +137,7 @@ Config load_config(const std::filesystem::path& path) {
 
     const auto& or_sec = section(root, "online_radio");
     cfg.online_radio.enabled = pick<bool>(or_sec, "enabled", cfg.online_radio.enabled);
-    cfg.online_radio.default_station_index = pick<int>(or_sec, "default_station_index", cfg.online_radio.default_station_index);
+    cfg.online_radio.default_station_index = pick<int>(or_sec, "default_station_index", static_cast<int>(cfg.online_radio.default_station_index));
     try {
         if (or_sec.contains("stations")) {
             const auto& arr = toml::find<std::vector<toml::table>>(or_sec, "stations");
@@ -350,7 +350,7 @@ void save_config(const std::filesystem::path& path, const Config& cfg) {
     e.kv("enabled", cfg.online_radio.enabled);
     e.kv("default_station_index", (int64_t)cfg.online_radio.default_station_index);
     for (const auto& st : cfg.online_radio.stations) {
-        e.header_array("online_radio.stations");
+        e.array_header("online_radio.stations");
         e.kv("name", st.name);
         e.kv("url", st.url);
     }
