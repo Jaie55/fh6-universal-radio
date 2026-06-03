@@ -13,6 +13,9 @@ volume slider, and fades on the loading screen.
 Getting it running
 ~~~~~~~~~~~~~~~~~~
 
+Prefer a video? Watch the installation guide on YouTube:
+https://www.youtube.com/watch?v=9Uwy3pDf4SQ
+
 Make sure FH6 isn't open first. Then drop the contents of this archive
 straight into the folder that contains forzahorizon6.exe. Depending on
 where you installed the game, that'll look like one of:

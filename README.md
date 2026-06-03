@@ -30,6 +30,8 @@ An open-source radio mod for **Forza Horizon 6**. Adds a new in-game radio stati
 
 ## Install
 
+> 📺 Prefer a video? Watch the [installation guide on YouTube](https://www.youtube.com/watch?v=9Uwy3pDf4SQ).
+
 1. Download the latest `fh6-universal-radio.zip` from [Nexus Mods](https://www.nexusmods.com/forzahorizon6/mods/215).
 2. Close FH6.
 3. Extract the ZIP into your Forza Horizon 6 install folder (next to `forzahorizon6.exe`). Overwrite when prompted.
