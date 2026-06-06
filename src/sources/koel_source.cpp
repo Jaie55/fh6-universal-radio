@@ -62,17 +62,26 @@ std::string md5_hex(const std::string& input) {
         return {};
 
     DWORD hash_obj_len = 0, hash_len = 0, unused = 0;
-    BCryptGetProperty(algo, BCRYPT_OBJECT_LENGTH, (PUCHAR)&hash_obj_len, sizeof(hash_obj_len),
-                      &unused, 0);
-    BCryptGetProperty(algo, BCRYPT_HASH_LENGTH, (PUCHAR)&hash_len, sizeof(hash_len), &unused, 0);
+    auto st = BCryptGetProperty(algo, BCRYPT_OBJECT_LENGTH, (PUCHAR)&hash_obj_len,
+                                sizeof(hash_obj_len), &unused, 0);
+    if (st != 0) { BCryptCloseAlgorithmProvider(algo, 0); return {}; }
+    st = BCryptGetProperty(algo, BCRYPT_HASH_LENGTH, (PUCHAR)&hash_len, sizeof(hash_len),
+                           &unused, 0);
+    if (st != 0) { BCryptCloseAlgorithmProvider(algo, 0); return {}; }
 
     std::vector<BYTE> hash_obj(hash_obj_len);
     std::vector<BYTE> hash(hash_len);
 
     BCRYPT_HASH_HANDLE h = nullptr;
-    BCryptCreateHash(algo, &h, hash_obj.data(), (ULONG)hash_obj.size(), nullptr, 0, 0);
-    BCryptHashData(h, (PUCHAR)input.data(), (ULONG)input.size(), 0);
-    BCryptFinishHash(h, hash.data(), (ULONG)hash.size(), 0);
+    st = BCryptCreateHash(algo, &h, hash_obj.data(), (ULONG)hash_obj.size(), nullptr, 0, 0);
+    if (st != 0) { BCryptCloseAlgorithmProvider(algo, 0); return {}; }
+
+    st = BCryptHashData(h, (PUCHAR)input.data(), (ULONG)input.size(), 0);
+    if (st != 0) { BCryptDestroyHash(h); BCryptCloseAlgorithmProvider(algo, 0); return {}; }
+
+    st = BCryptFinishHash(h, hash.data(), (ULONG)hash.size(), 0);
+    if (st != 0) { BCryptDestroyHash(h); BCryptCloseAlgorithmProvider(algo, 0); return {}; }
+
     BCryptDestroyHash(h);
     BCryptCloseAlgorithmProvider(algo, 0);
 
@@ -219,7 +228,11 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
                     auto t = parse_song_entry(song);
                     if (!t.id.empty()) out.push_back(std::move(t));
                 }
-            } catch (...) {}
+            } catch (const std::exception& e) {
+                log::warn("[koel] getAlbum JSON parse (album {}) : {}", aid, e.what());
+            } catch (...) {
+                log::warn("[koel] getAlbum JSON parse (album {}) : unknown exception", aid);
+            }
         }
 
         log::info("[koel] fetched {} track(s) for artist", out.size());

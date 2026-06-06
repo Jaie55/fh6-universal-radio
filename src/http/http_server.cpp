@@ -926,9 +926,12 @@ struct HttpServer::Impl {
                     auto idx = resp->find("artists");
                     if (idx != resp->end() && idx->is_object()) {
                         auto& arr = (*idx)["index"];
-                        if (arr.is_array()) for (auto& ix : arr)
-                            for (auto& a : ix["artist"])
-                                out.push_back({{"id", a.value("id", "")}, {"name", a.value("name", "")}});
+                        if (arr.is_array()) for (auto& ix : arr) {
+                            auto art = ix.find("artist");
+                            if (art != ix.end() && art->is_array())
+                                for (auto& a : *art)
+                                    out.push_back({{"id", a.value("id", "")}, {"name", a.value("name", "")}});
+                        }
                     }
                 }
                 return ok(json{{"items", std::move(out)}});

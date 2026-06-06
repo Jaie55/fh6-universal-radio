@@ -3,6 +3,7 @@
 
 #include <toml.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <span>
 #include <system_error>
@@ -143,7 +144,7 @@ Config load_config(const std::filesystem::path& path) {
     cfg.koel.source_type       = pick<std::string>(kl, "source_type", cfg.koel.source_type);
     cfg.koel.source_id         = pick<std::string>(kl, "source_id", cfg.koel.source_id);
     cfg.koel.shuffle           = pick<bool>(kl, "shuffle", cfg.koel.shuffle);
-    cfg.koel.random_count      = pick<int>(kl, "random_count", cfg.koel.random_count);
+    cfg.koel.random_count      = (std::max)(pick<int>(kl, "random_count", cfg.koel.random_count), 1);
 
     const auto& or_sec       = section(root, "online_radio");
     cfg.online_radio.enabled = pick<bool>(or_sec, "enabled", cfg.online_radio.enabled);

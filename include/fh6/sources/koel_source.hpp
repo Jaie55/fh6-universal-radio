@@ -73,7 +73,7 @@ public:
 
     std::string auth_instructions() const override {
         return "Enter your Koel server URL, your Koel email as username, and your Subsonic API "
-               "key as password. Then select a source (favorites, playlist, album, or artist). "
+               "key as password. Then select a source (favorites, playlist, album, artist, or random). "
                "The API key can be found in Koel settings under 'Profile & Preferences' > 'Subsonic'.";
     }
 
