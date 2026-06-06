@@ -387,6 +387,7 @@ bool KoelSource::initialize() {
             std::scoped_lock lk{mu_};
             auth_error_.clear();
             queue_ = std::move(result.tracks);
+            cached_artwork_idx_ = SIZE_MAX;
             if (cfg_.shuffle) shuffle_range(queue_, 0);
         }
     } else {
@@ -565,6 +566,7 @@ std::string KoelSource::cast(std::string source_type, std::string source_id) {
     cfg_.source_id   = std::move(source_id);
     queue_           = std::move(result.tracks);
     current_idx_     = 0;
+    cached_artwork_idx_ = SIZE_MAX;
     if (cfg_.shuffle) shuffle_range(queue_, 0);
     discard_prefetch_locked();
     start_pipe_locked();
@@ -599,6 +601,7 @@ void KoelSource::set_config(KoelConfig cfg) {
                 stop_pipe_locked();
                 queue_       = std::move(result.tracks);
                 current_idx_ = 0;
+                cached_artwork_idx_ = SIZE_MAX;
                 if (cfg_.shuffle) shuffle_range(queue_, 0);
                 if (was_playing) {
                     start_pipe_locked();
