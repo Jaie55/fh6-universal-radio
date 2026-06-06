@@ -187,29 +187,44 @@ $("#yt-shuffle").addEventListener("click", async () => {
   }
 });
 
+let koelItems = [];
+
+function populateKoelDatalist(items) {
+  const dl = $("#koel-datalist");
+  dl.innerHTML = "";
+  items.forEach(item => {
+    const opt = document.createElement("option");
+    opt.value = item.name;
+    dl.appendChild(opt);
+  });
+}
+
+function koelLookupId(name) {
+  const match = koelItems.find(i => i.name === name);
+  return match ? match.id : "";
+}
+
 $("#koel-source-type").addEventListener("change", async () => {
   const type = $("#koel-source-type").value;
-  const sel = $("#koel-source-id");
-  sel.innerHTML = "";
+  const input = $("#koel-source-id");
   if (type === "favorites" || type === "random") {
-    sel.disabled = true;
-    sel.innerHTML = '<option value="">—</option>';
+    input.disabled = true;
+    input.value = "";
+    input.placeholder = "—";
+    koelItems = [];
+    populateKoelDatalist([]);
     return;
   }
-  sel.disabled = false;
-  sel.innerHTML = '<option value="">Loading…</option>';
+  input.disabled = false;
+  input.value = "";
+  input.placeholder = "Loading…";
   try {
     const data = await api.browseKoel(type === "playlist" ? "playlists" : type + "s");
-    const items = data.items || [];
-    sel.innerHTML = '<option value="">Select ' + type + '…</option>';
-    items.forEach(item => {
-      const opt = document.createElement("option");
-      opt.value = item.id;
-      opt.textContent = item.name;
-      sel.appendChild(opt);
-    });
+    koelItems = data.items || [];
+    populateKoelDatalist(koelItems);
+    input.placeholder = "Search and select…";
   } catch (err) {
-    sel.innerHTML = '<option value="">Error loading</option>';
+    input.placeholder = "Error loading";
     toast(err.message, true);
   }
 });
@@ -217,8 +232,12 @@ $("#koel-source-type").addEventListener("change", async () => {
 $("#koel-cast").addEventListener("submit", async e => {
   e.preventDefault();
   const sourceType = $("#koel-source-type").value;
-  const sel = $("#koel-source-id");
-  const sourceId = sel.disabled ? "" : sel.value.trim();
+  const input = $("#koel-source-id");
+  const sourceId = input.disabled ? "" : koelLookupId(input.value.trim());
+  if (!input.disabled && !sourceId) {
+    toast("Pick a valid item from the list", true);
+    return;
+  }
   try {
     await api.castKoel(sourceType, sourceId);
     toast("Playing…");

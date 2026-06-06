@@ -106,6 +106,9 @@ private:
     std::atomic<bool> prebuffer_next_{true};
     std::atomic<AuthState> auth_state_{AuthState::needs_auth};
     std::string auth_error_;
+    // Cache artwork URL per track so auth params don't change on every poll.
+    mutable std::size_t cached_artwork_idx_ = SIZE_MAX;
+    mutable std::string cached_artwork_url_;
 };
 
 } // namespace fh6::sources

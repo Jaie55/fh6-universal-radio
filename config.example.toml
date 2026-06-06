@@ -48,8 +48,8 @@ shuffle            = true              # true or false
 [koel]
 enabled            = false
 server_url         = ''                # e.g. 'https://koel.example.com'
-username           = 'email@example.com' # Subsonic username (your Koel email address)
-password           = ''                # Subsonic password or Koel API key (found in Profile & Preferences > Subsonic)
+username           = 'email@example.com' # your Koel email address
+password           = ''                # Koel Subsonic API key (found in Profile & Preferences > Subsonic)
 source_type        = 'favorites'       # chosen from the main menu
 source_id          = ''                # chosen from the main menu
 shuffle            = true

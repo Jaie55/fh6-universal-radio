@@ -94,6 +94,14 @@ std::string md5_hex(const std::string& input) {
 
 std::string auth_query(const KoelConfig& cfg) {
     const auto& u = cfg.username.empty() ? "subsonic" : cfg.username;
+    // Prefer token-based auth (Subsonic / OpenSubsonic standard).
+    // Falls back to password-based for servers that don't support tokens.
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    auto salt = std::to_string(rng());
+    auto token = md5_hex(cfg.password + salt);
+    if (!token.empty())
+        return std::format("u={}&t={}&s={}&v=1.16.1&c=fh6-radio",
+                           url_encode(u), token, url_encode(salt));
     return std::format("u={}&p={}&v=1.16.1&c=fh6-radio",
                        url_encode(u), url_encode(cfg.password));
 }
@@ -378,9 +386,9 @@ bool KoelSource::initialize() {
         {
             std::scoped_lock lk{mu_};
             auth_error_.clear();
+            queue_ = std::move(result.tracks);
+            if (cfg_.shuffle) shuffle_range(queue_, 0);
         }
-        queue_ = std::move(result.tracks);
-        if (cfg_.shuffle) shuffle_range(queue_, 0);
     } else {
         log::error("[koel] initialize: {}", result.error);
         auth_state_.store(AuthState::error, std::memory_order_release);
@@ -656,11 +664,15 @@ TrackInfo KoelSource::current_track() const {
     info.album       = t.album;
     info.duration_ms = t.duration_ms;
     if (!t.image_url.empty() && !cfg_.server_url.empty()) {
-        auto cover_id = !t.parent.empty() ? t.parent : t.image_url;
-        std::string url = cfg_.server_url;
-        if (url.ends_with('/')) url.resize(url.size() - 1);
-        info.artwork_url = std::format("{}/rest/getCoverArt.view?id={}&{}",
-                                        url, url_encode(cover_id), auth_query(cfg_));
+        if (current_idx_ != cached_artwork_idx_) {
+            auto cover_id = !t.parent.empty() ? t.parent : t.image_url;
+            std::string url = cfg_.server_url;
+            if (url.ends_with('/')) url.resize(url.size() - 1);
+            cached_artwork_url_ = std::format("{}/rest/getCoverArt.view?id={}&{}",
+                                              url, url_encode(cover_id), auth_query(cfg_));
+            cached_artwork_idx_ = current_idx_;
+        }
+        info.artwork_url = cached_artwork_url_;
     }
     if (pipe_) info.position_ms = pipe_->position_ms.load(std::memory_order_acquire);
     return info;

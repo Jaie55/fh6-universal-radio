@@ -60,9 +60,9 @@ export const SCHEMA = [
     "Koel",
     [
       ["enabled", "Enabled", "checkbox"],
-      ["server_url", "Server URL (e.g. 'https://koel.example.com' or 'https://koel.example.com/api/subsonic')", "text"],
-      ["username", "Username (your Koel email)", "text"],
-      ["password", "Password / API Key", "text"],
+      ["server_url", "Server URL (e.g. 'https://koel.example.com')", "text"],
+      ["username", "Email", "text"],
+      ["password", "API Key", "text"],
     ],
   ],
   ["external_audio", "External Audio", [["enabled", "Enabled", "checkbox"]]],
