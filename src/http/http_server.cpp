@@ -886,58 +886,138 @@ struct HttpServer::Impl {
             auto snap = store.snapshot();
             auto& k   = snap.koel;
             if (!k.enabled || k.server_url.empty())
-                return fail(400, "Koel not configured");
+                return fail(400, "Subsonic source not configured");
             auto auth = std::format("u={}&p={}&v=1.16.1&c=fh6-radio",
                                      url_encode(k.username), url_encode(k.password));
             auto su = k.server_url;
             if (su.ends_with('/')) su.resize(su.size() - 1);
             auto sub = std::string_view(p).substr(std::string_view("/api/source/koel/browse/").size());
-            std::string method, extra;
-            if (sub == "playlists") { method = "getPlaylists"; }
-            else if (sub == "albums") { method = "getAlbumList2"; extra = "type=newest&size=50"; }
-            else if (sub == "artists") { method = "getArtists"; }
-            else return fail(404, "unknown browse type");
-            auto url = std::format("{}/rest/{}.view?f=json&{}", su, method, auth);
-            if (!extra.empty()) url += "&" + extra;
-            auto body = net::http_get(url);
-            if (!body) return fail(502, "cannot reach Koel server");
-            try {
-                auto root = json::parse(*body);
-                auto resp = root.find("subsonic-response");
-                if (resp == root.end()) return fail(502, "unexpected response");
-                if (resp->value("status", "") != "ok")
-                    return fail(502, resp->value("error", json::object()).value("message", "API error"));
-                json out = json::array();
-                if (sub == "playlists") {
-                    auto lists = resp->find("playlists");
-                    if (lists != resp->end() && lists->is_object()) {
-                        auto& arr = (*lists)["playlist"];
-                        if (arr.is_array()) for (auto& e : arr)
-                            out.push_back({{"id", e.value("id", "")}, {"name", e.value("name", "")}});
+
+            std::string type_str, q_str;
+            auto qpos = sub.find('?');
+            if (qpos != std::string_view::npos) {
+                type_str = std::string(sub.substr(0, qpos));
+                q_str    = std::string(sub.substr(qpos + 1));
+            } else {
+                type_str = std::string(sub);
+            }
+
+            std::string search_q;
+            if (!q_str.empty()) {
+                auto url_decode = [](std::string_view s) {
+                    std::string out;
+                    out.reserve(s.size());
+                    for (size_t i = 0; i < s.size(); ++i) {
+                        if (s[i] == '%' && i + 2 < s.size()) {
+                            unsigned int c = 0;
+                            if (std::sscanf(s.data() + i + 1, "%2x", &c) == 1) {
+                                out += static_cast<char>(c);
+                                i += 2;
+                                continue;
+                            }
+                        }
+                        out += s[i] == '+' ? ' ' : s[i];
                     }
-                } else if (sub == "albums") {
-                    auto lists = resp->find("albumList2");
-                    if (lists != resp->end() && lists->is_object()) {
-                        auto& arr = (*lists)["album"];
-                        if (arr.is_array()) for (auto& e : arr)
-                            out.push_back({{"id", e.value("id", "")}, {"name", e.value("name", "")}});
+                    return out;
+                };
+                size_t pos = 0;
+                while (pos < q_str.size()) {
+                    auto amp = q_str.find('&', pos);
+                    auto eq  = q_str.find('=', pos);
+                    if (eq != std::string::npos && eq < amp) {
+                        auto key = std::string_view(q_str).substr(pos, eq - pos);
+                        auto v_start = eq + 1;
+                        auto v_end   = (std::min)(amp, q_str.size());
+                        if (key == "q")
+                            search_q = url_decode(std::string_view(q_str).substr(v_start, v_end - v_start));
                     }
-                } else if (sub == "artists") {
-                    auto idx = resp->find("artists");
-                    if (idx != resp->end() && idx->is_object()) {
-                        auto& arr = (*idx)["index"];
-                        if (arr.is_array()) for (auto& ix : arr) {
-                            auto art = ix.find("artist");
-                            if (art != ix.end() && art->is_array())
-                                for (auto& a : *art)
-                                    out.push_back({{"id", a.value("id", "")}, {"name", a.value("name", "")}});
+                    if (amp == std::string::npos) break;
+                    pos = amp + 1;
+                }
+            }
+
+            auto fetch_items = [&](std::string method, std::string extra) {
+                struct R { json items; std::string error; bool ok = false; };
+                try {
+                    auto url = std::format("{}/rest/{}.view?f=json&{}", su, method, auth);
+                    if (!extra.empty()) url += "&" + extra;
+                    auto body = net::http_get(url);
+                    if (!body) return R{{}, "cannot reach Subsonic server", false};
+                    auto root = json::parse(*body);
+                    auto resp = root.find("subsonic-response");
+                    if (resp == root.end()) return R{{}, "unexpected response", false};
+                    if (resp->value("status", "") != "ok")
+                        return R{{}, resp->value("error", json::object()).value("message", "API error"), false};
+                    json out = json::array();
+                    if (type_str == "playlists") {
+                        auto lists = resp->find("playlists");
+                        if (lists != resp->end() && lists->is_object()) {
+                            auto& arr = (*lists)["playlist"];
+                            if (arr.is_array()) for (auto& e : arr)
+                                out.push_back({{"id", e.value("id", "")}, {"name", e.value("name", "")}});
+                        }
+                    } else if (type_str == "albums") {
+                        auto& arr_key = (method == "search3") ? (*resp)["searchResult3"]["album"] : (*resp)["albumList2"]["album"];
+                        if (arr_key.is_array()) for (auto& e : arr_key)
+                            out.push_back({{"id", e.value("id", "")}, {"name", e.value("name", "")}});
+                    } else if (type_str == "artists") {
+                        if (method == "search3") {
+                            auto& arr_key = (*resp)["searchResult3"]["artist"];
+                            if (arr_key.is_array()) for (auto& e : arr_key)
+                                out.push_back({{"id", e.value("id", "")}, {"name", e.value("name", "")}});
+                        } else {
+                            auto idx = resp->find("artists");
+                            if (idx != resp->end() && idx->is_object()) {
+                                auto& arr = (*idx)["index"];
+                                if (arr.is_array()) for (auto& ix : arr) {
+                                    auto art = ix.find("artist");
+                                    if (art != ix.end() && art->is_array())
+                                        for (auto& a : *art)
+                                            out.push_back({{"id", a.value("id", "")}, {"name", a.value("name", "")}});
+                                }
+                            }
                         }
                     }
+                    return R{std::move(out), "", true};
+                } catch (const std::exception& e) {
+                    return R{{}, std::string("parse error: ") + e.what(), false};
                 }
-                return ok(json{{"items", std::move(out)}});
-            } catch (const std::exception& e) {
-                return fail(502, std::string("parse error: ") + e.what());
+            };
+
+            bool is_search = false;
+            std::string method, extra;
+            if (type_str == "playlists") {
+                method = "getPlaylists";
+            } else if (type_str == "albums") {
+                if (!search_q.empty()) {
+                    is_search = true;
+                    method    = "search3";
+                    extra     = "albumCount=50&query=" + url_encode(search_q);
+                } else {
+                    method = "getAlbumList2";
+                    extra  = "type=newest&size=500";
+                }
+            } else if (type_str == "artists") {
+                if (!search_q.empty()) {
+                    is_search = true;
+                    method    = "search3";
+                    extra     = "artistCount=50&query=" + url_encode(search_q);
+                } else {
+                    method = "getArtists";
+                }
+            } else {
+                return fail(404, "unknown browse type");
             }
+
+            auto r = fetch_items(method, extra);
+            if (is_search && !r.ok) {
+                // search3 not supported by server – fall back to regular browse
+                r = (type_str == "albums")
+                        ? fetch_items("getAlbumList2", "type=newest&size=500")
+                        : fetch_items("getArtists", "");
+            }
+            if (!r.ok) return fail(502, r.error);
+            return ok(json{{"items", std::move(r.items)}});
         }
         if (m == "POST" && p == "/api/source/online_radio/cast") {
             auto* rd = find_typed<sources::OnlineRadioSource>("online_radio");

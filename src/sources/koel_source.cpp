@@ -179,7 +179,7 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
         auto artist_body = net::http_get(artist_url);
         if (!artist_body) {
             log::error("[koel] HTTP request failed for getArtist");
-            return {{}, "HTTP request to Koel server failed – check the URL"};
+                            return {{}, "HTTP request to Subsonic server failed – check the URL"};
         }
 
         std::vector<std::string> album_ids;
@@ -188,18 +188,18 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
             auto resp = root.find("subsonic-response");
             if (resp == root.end() || !resp->is_object()) {
                 log::error("[koel] getArtist response missing subsonic-response");
-                return {{}, "unexpected response from Koel server (missing subsonic-response)"};
+                            return {{}, "unexpected response from Subsonic server (missing subsonic-response)"};
             }
             if (resp->value("status", "") != "ok") {
                 auto err_obj = resp->value("error", json::object());
                 auto msg = err_obj.value("message", "unknown error");
                 log::error("[koel] getArtist API error: {}", msg);
-                return {{}, "Koel API error: " + msg};
+                            return {{}, "Subsonic API error: " + msg};
             }
             auto art = resp->find("artist");
             if (art == resp->end() || !art->is_object()) {
                 log::error("[koel] getArtist missing artist object");
-                return {{}, "unexpected response from Koel server (missing artist)"};
+                            return {{}, "unexpected response from Subsonic server (missing artist)"};
             }
             auto albums = art->find("album");
             if (albums != art->end() && albums->is_array()) {
@@ -210,7 +210,7 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
             }
         } catch (const std::exception& e) {
             log::error("[koel] getArtist JSON parse error: {}", e.what());
-            return {{}, "failed to parse Koel server response: " + std::string(e.what())};
+                            return {{}, "failed to parse Subsonic server response: " + std::string(e.what())};
         }
 
         if (album_ids.empty()) {
@@ -258,7 +258,7 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
         log::error("[koel] constructed URL was: {}.view?f=json&u={}&t=...&s=...&v=1.16.1&c=fh6-radio{}",
                    cfg.server_url + "/rest/" + method, url_encode(cfg.username.empty() ? "subsonic" : cfg.username),
                    extra_params.empty() ? "" : "&" + extra_params);
-        return {{}, "cannot reach Koel server – check the URL and that the server is running"};
+                            return {{}, "cannot reach Subsonic server – check the URL and that the server is running"};
     }
 
     std::vector<KoelTrack> out;
@@ -267,14 +267,14 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
         auto resp = root.find("subsonic-response");
         if (resp == root.end() || !resp->is_object()) {
             log::error("[koel] response missing subsonic-response");
-            return {{}, "unexpected response from Koel server (not a valid Subsonic API response)"};
+                            return {{}, "unexpected response from Subsonic server (not a valid Subsonic API response)"};
         }
         if (resp->value("status", "") != "ok") {
             auto err_obj = resp->value("error", json::object());
             auto msg = err_obj.value("message", "unknown error");
             log::error("[koel] API error: {} - {}",
                        err_obj.value("code", 0), msg);
-            return {{}, "Koel API error: " + msg};
+                            return {{}, "Subsonic API error: " + msg};
         }
 
         const json* container = nullptr;
@@ -294,7 +294,7 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
 
         if (!container) {
             log::error("[koel] no data container in response");
-            return {{}, "unexpected response from Koel server (no " + cfg.source_type + " data)"};
+                            return {{}, "unexpected response from Subsonic server (no " + cfg.source_type + " data)"};
         }
 
         const json* entries = nullptr;
@@ -323,7 +323,7 @@ FetchResult fetch_tracks(const KoelConfig& cfg) {
         }
     } catch (const std::exception& e) {
         log::error("[koel] JSON parse error: {}", e.what());
-        return {{}, "failed to parse Koel server response: " + std::string(e.what())};
+                            return {{}, "failed to parse Subsonic server response: " + std::string(e.what())};
     }
 
     log::info("[koel] fetched {} track(s)", out.size());
@@ -548,10 +548,10 @@ std::string KoelSource::cast(std::string source_type, std::string source_id) {
     snap.source_id   = source_id;
     if (!config_complete(snap)) {
         if (snap.server_url.empty())
-            return "Koel server URL not configured – set it in Settings first";
+                return "Subsonic server URL not configured – set it in Settings first";
         if (snap.password.empty())
-            return "Koel password/API key not configured – set it in Settings first";
-        return "incomplete Koel configuration";
+                return "Subsonic password/API key not configured – set it in Settings first";
+            return "incomplete Subsonic configuration";
     }
 
     FetchResult result;

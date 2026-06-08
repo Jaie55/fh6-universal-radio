@@ -229,6 +229,24 @@ $("#koel-source-type").addEventListener("change", async () => {
   }
 });
 
+let koelSearchTimer = null;
+
+$("#koel-source-id").addEventListener("input", () => {
+  const type = $("#koel-source-type").value;
+  if (type === "favorites" || type === "random") return;
+  clearTimeout(koelSearchTimer);
+  const q = $("#koel-source-id").value.trim();
+  koelSearchTimer = setTimeout(async () => {
+    const browseType = type === "playlist" ? "playlists" : type + "s";
+    try {
+      const suffix = q ? "?q=" + encodeURIComponent(q) : "";
+      const data = await api.browseKoel(browseType + suffix);
+      koelItems = data.items || [];
+      populateKoelDatalist(koelItems);
+    } catch (_) { /* keep previous list on error */ }
+  }, 300);
+});
+
 $("#koel-cast").addEventListener("submit", async e => {
   e.preventDefault();
   const sourceType = $("#koel-source-type").value;

@@ -37,7 +37,7 @@ public:
     ~KoelSource() override;
 
     std::string_view name() const noexcept override { return "koel"; }
-    std::string_view display_name() const noexcept override { return "Koel"; }
+    std::string_view display_name() const noexcept override { return "Koel / Subsonic"; }
 
     bool initialize() override;
     void shutdown() noexcept override;
@@ -72,9 +72,8 @@ public:
     SourceCapabilities capabilities() const noexcept override { return {false, true, true}; }
 
     std::string auth_instructions() const override {
-        return "Enter your Koel server URL, your Koel email as username, and your Subsonic API "
-               "key as password. Then select a source (favorites, playlist, album, artist, or random). "
-               "The API key can be found in Koel settings under 'Profile & Preferences' > 'Subsonic'.";
+        return "Enter your Koel or Subsonic-compatible server URL, your email or username, and your Subsonic API "
+               "key as password. For Koel, the API key can be found in settings under 'Profile & Preferences' > 'Subsonic'.";
     }
 
 private:
